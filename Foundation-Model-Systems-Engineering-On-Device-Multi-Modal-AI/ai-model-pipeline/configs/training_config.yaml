@@ -1,7 +1,7 @@
-# Configuration for the AI Model Pipeline
+# config.yaml
 
 model:
-  base_model_name: "llava-hf/llava-1.5-7b-hf"
+  base_model_name: "microsoft/Phi-3-vision-128k-instruct" # <-- THE FIX IS HERE
   fine_tuned_path: "./artifacts/fine_tuned_model"
   quantized_path: "./artifacts/quantized_model"
   coreml_output_path: "./artifacts/AuraModel.mlmodel"
@@ -13,8 +13,4 @@ data:
 training:
   num_epochs: 3
   learning_rate: 1e-5
-  batch_size_per_device: 4
-  output_dir: "./artifacts/training_output"
-
-optimization:
-  quantization_type: "int8"
+  batch_size_per_device: 2 # <-- Start with a smaller batch size for safety
