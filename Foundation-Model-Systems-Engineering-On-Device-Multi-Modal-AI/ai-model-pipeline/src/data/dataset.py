@@ -1,44 +1,69 @@
 # ==============================================================================
-# AI Systems Engineering: Professional Data Loading Module (CIFAR10 Fallback)
+# AI Systems Engineering: Professional Data Loading Module (for BLIP)
 # ==============================================================================
-#
-# This script uses the built-in torchvision CIFAR10 dataset.
-# It is simpler and has no external dependencies, making it a reliable way
-# to test the distributed training pipeline.
-
 import torch
-from torchvision import datasets, transforms
-from torch.utils.data import DataLoader
+from datasets import load_dataset
+from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from transformers import AutoProcessor
 import yaml
 from pathlib import Path
+from dotenv import load_dotenv
+import os
 
-def get_dataloader(rank: int, world_size: int, batch_size: int, data_path: str = "./data"):
-    """
-    Creates a DataLoader for the CIFAR10 dataset with a DistributedSampler.
-    """
-    # Define a standard transformation for image normalization
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-    ])
+load_dotenv()
+HUGGING_FACE_TOKEN = os.getenv("HUGGING_FACE_TOKEN")
+if not HUGGING_FACE_TOKEN:
+    raise ValueError("Hugging Face token not found...")
 
-    # Download and load the training dataset
-    dataset = datasets.CIFAR10(root=data_path, train=True, download=True, transform=transform)
-    
-    sampler = DistributedSampler(
-        dataset, 
-        num_replicas=world_size, 
-        rank=rank, 
-        shuffle=True
-    )
-    
+class MultiModalDataset(Dataset):
+    """Returns raw data points (PIL Image and text string)."""
+    def __init__(self, hf_dataset):
+        self.dataset = hf_dataset
+
+    def __getitem__(self, idx):
+        item = self.dataset[idx]
+        try:
+            class_id = item['label']
+            text_content = f"a photo of a pet of class id {class_id}"
+            image_content = item['image'].convert("RGB")
+        except KeyError as e:
+            raise KeyError(f"Dataset item at index {idx} is missing a required key: {e}.")
+        return {"image": image_content, "text": text_content}
+
+def create_collate_fn(processor):
+    """
+    Creates a collate function that uses the standard processor's batching.
+    This works perfectly for well-supported models like BLIP.
+    """
+    def collate_fn(batch):
+        texts = [item["text"] for item in batch]
+        images = [item["image"] for item in batch]
+        
+        # A standard processor handles batching of lists correctly.
+        processed_batch = processor(
+            text=texts,
+            images=images,
+            return_tensors="pt",
+            padding=True,
+            truncation=True
+        )
+        return processed_batch
+        
+    return collate_fn
+
+def get_dataloader(rank: int, world_size: int, dataset_name: str, processor, batch_size: int, split: str = "train"):
+    hf_dataset = load_dataset(dataset_name, split=split, token=HUGGING_FACE_TOKEN)
+    pytorch_dataset = MultiModalDataset(hf_dataset)
+    sampler = DistributedSampler(pytorch_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    collate_function = create_collate_fn(processor)
     dataloader = DataLoader(
-        dataset,
+        pytorch_dataset,
         batch_size=batch_size,
         sampler=sampler,
         num_workers=2,
         pin_memory=True,
+        collate_fn=collate_function
     )
     return dataloader
 
@@ -46,21 +71,20 @@ if __name__ == '__main__':
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
     with open(config_path, 'r') as file: config = yaml.safe_load(file)
-
-    print("Creating a test dataloader for CIFAR10...")
+    print("Loading processor for testing...")
+    processor = AutoProcessor.from_pretrained(config['model']['base_model_name'], token=HUGGING_FACE_TOKEN)
+    print(f"Creating a test dataloader for dataset: {config['data']['dataset_name']}...")
     test_dataloader = get_dataloader(
-        rank=0, 
-        world_size=1, 
-        batch_size=config['training']['batch_size_per_device']
+        rank=0, world_size=1, dataset_name=config['data']['dataset_name'], 
+        processor=processor, batch_size=config['training']['batch_size_per_device']
     )
-    
     print("\nFetching one batch from the dataloader...")
     try:
-        # The CIFAR10 dataloader returns a tuple (images, labels)
-        for images, labels in test_dataloader:
+        for batch in test_dataloader:
             print("\n✅ Successfully fetched one batch.")
-            print("Images batch shape:", images.shape)
-            print("Labels batch shape:", labels.shape)
+            print("Batch keys:", batch.keys())
+            print("Input IDs shape:", batch['input_ids'].shape)
+            print("Pixel values shape:", batch['pixel_values'].shape)
             break
     except Exception as e:
         print(f"\n❌ Error fetching batch: {e}")

@@ -1,7 +1,11 @@
+# Configuration for the AI Model Pipeline (BLIP Model)
+
 model:
-  base_model_name: "microsoft/Phi-3-vision-128k-instruct"
-  fine_tuned_path: "./artifacts/phi3_vision_finetuned.pth"
-  quantized_path: "./artifacts/phi3_vision_quantized.pth"
+  # --- THE CHANGE ---
+  base_model_name: "Salesforce/blip-image-captioning-large"
+  
+  fine_tuned_path: "./artifacts/blip_finetuned.pth"
+  quantized_path: "./artifacts/blip_quantized.pth"
   coreml_output_path: "./artifacts/AuraModel.mlmodel"
 
 data:
@@ -9,5 +13,5 @@ data:
 
 training:
   num_epochs: 3
-  learning_rate: 1e-5
-  batch_size_per_device: 2
+  learning_rate: 5e-5 # A common starting learning rate for fine-tuning
+  batch_size_per_device: 8 # We can use a larger batch size with a smaller model
