@@ -12,9 +12,6 @@ from pathlib import Path
 # --- FOOLPROOF PYTHON PATH FIX ---
 # This robustly adds the project's 'src' directory to the Python path.
 # It allows the script to be run from anywhere and still find its modules.
-# Path(__file__) is the path to this script (train_distributed.py).
-# .resolve() makes it an absolute path.
-# .parent.parent is the 'src' directory.
 src_path = Path(__file__).resolve().parent.parent
 sys.path.append(str(src_path))
 # --- END OF FIX ---
@@ -60,17 +57,26 @@ def train(rank: int, world_size: int, config: dict):
         print(f"Loading base model '{model_name}'...")
 
     processor = AutoProcessor.from_pretrained(model_name)
+    
+    # --- THE OOM (OUT-OF-MEMORY) FIX IS HERE ---
+    # Use device_map="auto" to intelligently load the large model directly
+    # onto the available GPU(s), bypassing the need to fit it all into CPU RAM first.
+    # This is critical for loading models larger than your system's RAM.
     model = AutoModelForVision2Seq.from_pretrained(
         model_name,
-        torch_dtype=torch.bfloat16  # bfloat16 is optimized for modern GPUs
+        torch_dtype=torch.bfloat16,  # bfloat16 is optimized for modern GPUs
+        device_map="auto" 
     )
 
+    # Note: Because we use device_map, the model is already on the GPU.
+
     # --- 2. Wrap the Model with FSDP ---
+    # FSDP will now take the model that's already on the GPU(s) and shard it for training.
     auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1e8)
     model = FSDP(model, auto_wrap_policy=auto_wrap_policy, device_id=torch.cuda.current_device())
     
     if rank == 0:
-        print("✅ Model successfully wrapped with FSDP.")
+        print("✅ Model successfully loaded and wrapped with FSDP.")
 
     # --- 3. Create the Dataloader ---
     if rank == 0:
@@ -126,8 +132,6 @@ def train(rank: int, world_size: int, config: dict):
         print("\n--- Training Complete ---")
         print("Saving final model checkpoint...")
         # In a real scenario, you would implement the proper FSDP state dict saving logic here.
-        # This involves gathering the sharded parameters onto a single rank before saving.
-        # For now, we simulate the completion of this step.
         save_path = config['model']['fine_tuned_path']
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         print(f"✅ Model checkpoint would be saved to: {save_path}")
@@ -143,13 +147,12 @@ if __name__ == '__main__':
         config = yaml.safe_load(file)
 
     # --- 2. Get Distributed Training Environment Variables ---
-    # `torchrun` automatically provides these variables to each process.
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
 
     # --- 3. Validate Environment and Start Training ---
-    if world_size > 1 and not torch.cuda.is_available():
-        raise RuntimeError("Distributed training requires CUDA, but it's not available.")
+    if not torch.cuda.is_available():
+        raise RuntimeError("This training script requires at least one CUDA-enabled GPU.")
         
     if world_size > torch.cuda.device_count():
          raise RuntimeError(f"Requested {world_size} GPUs, but only {torch.cuda.device_count()} are available.")
