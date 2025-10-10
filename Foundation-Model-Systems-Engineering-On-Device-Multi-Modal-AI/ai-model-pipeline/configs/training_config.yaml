@@ -1,31 +1,13 @@
-# ==============================================================================
-# Configuration for the CIFAR10 Training Pipeline Test
-# ==============================================================================
-#
-# This configuration is designed to test the end-to-end distributed training
-# pipeline using a standard, reliable dataset (CIFAR10) and model (ResNet18).
-
 model:
-  # We are not using a Hugging Face model for this test, but this is a placeholder.
-  base_model_name: "resnet18" 
-  
-  # This is where the final, trained model weights will be saved.
-  fine_tuned_path: "./artifacts/cifar10_resnet18_final.pth"
+  base_model_name: "microsoft/Phi-3-vision-128k-instruct"
+  fine_tuned_path: "./artifacts/phi3_vision_finetuned.pth"
+  quantized_path: "./artifacts/phi3_vision_quantized.pth"
+  coreml_output_path: "./artifacts/AuraModel.mlmodel"
 
 data:
-  # This is just a label for this config. The CIFAR10 dataloader in dataset.py
-  # does not actually use this name.
-  dataset_name: "CIFAR10" 
+  dataset_name: "pcuenq/oxford-pets"
 
 training:
-  # The number of times to loop over the entire dataset.
-  # Keep this low (e.g., 1-5) for a quick test run.
-  num_epochs: 5
-  
-  # The learning rate for the optimizer.
-  # This MUST be a number, not a string like "0.01". This fixes the TypeError.
-  learning_rate: 0.01 
-  
-  # The number of samples each GPU will process at once.
-  # 128 is a good starting point for CIFAR10 and ResNet18.
-  batch_size_per_device: 128
+  num_epochs: 3
+  learning_rate: 1e-5
+  batch_size_per_device: 2
