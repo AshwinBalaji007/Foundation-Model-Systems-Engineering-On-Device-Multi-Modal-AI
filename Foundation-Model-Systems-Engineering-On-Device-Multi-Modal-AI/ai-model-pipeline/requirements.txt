@@ -11,3 +11,4 @@ coremltools
 python-dotenv
 pyyaml
 tqdm
+notebook

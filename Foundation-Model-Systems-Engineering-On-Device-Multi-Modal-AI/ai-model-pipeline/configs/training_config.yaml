@@ -7,7 +7,7 @@ model:
   coreml_output_path: "./artifacts/AuraModel.mlmodel"
 
 data:
-  dataset_name: "name-of-your-multimodal-dataset"
+  dataset_name: "pcuenq/oxford-pets"
   local_path: "./data"
 
 training:
