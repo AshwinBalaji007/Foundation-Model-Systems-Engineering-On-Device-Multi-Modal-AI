@@ -1,6 +1,8 @@
 # ==============================================================================
-# AI Systems Engineering: Professional Data Loading Module (for BLIP)
+# AI Systems Engineering: Professional Data Loading Module (Final Version)
 # ==============================================================================
+# This version includes the __len__ method, a requirement for all PyTorch datasets.
+
 import torch
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
@@ -21,6 +23,13 @@ class MultiModalDataset(Dataset):
     def __init__(self, hf_dataset):
         self.dataset = hf_dataset
 
+    # --- THE FIX IS HERE ---
+    # The __len__ method is required by PyTorch's Dataset class.
+    # It tells the DataLoader how many total samples are in the dataset,
+    # which is essential for samplers and for creating progress bars.
+    def __len__(self):
+        return len(self.dataset)
+
     def __getitem__(self, idx):
         item = self.dataset[idx]
         try:
@@ -32,15 +41,10 @@ class MultiModalDataset(Dataset):
         return {"image": image_content, "text": text_content}
 
 def create_collate_fn(processor):
-    """
-    Creates a collate function that uses the standard processor's batching.
-    This works perfectly for well-supported models like BLIP.
-    """
+    """Creates a collate function that uses the standard processor's batching."""
     def collate_fn(batch):
         texts = [item["text"] for item in batch]
         images = [item["image"] for item in batch]
-        
-        # A standard processor handles batching of lists correctly.
         processed_batch = processor(
             text=texts,
             images=images,
@@ -49,7 +53,6 @@ def create_collate_fn(processor):
             truncation=True
         )
         return processed_batch
-        
     return collate_fn
 
 def get_dataloader(rank: int, world_size: int, dataset_name: str, processor, batch_size: int, split: str = "train"):
@@ -67,6 +70,7 @@ def get_dataloader(rank: int, world_size: int, dataset_name: str, processor, bat
     )
     return dataloader
 
+# --- (The __main__ block remains the same) ---
 if __name__ == '__main__':
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
