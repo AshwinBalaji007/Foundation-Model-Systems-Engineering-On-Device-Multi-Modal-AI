@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+
+# Notebooks
+.ipynb_checkpoints
+
+# IDE specific
+.idea/
+.vscode/
+
+# macOS
+.DS_Store

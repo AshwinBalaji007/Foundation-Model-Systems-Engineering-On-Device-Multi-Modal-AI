@@ -1,0 +1,13 @@
+# Core ML & AI Frameworks
+torch
+transformers
+accelerate
+datasets
+
+# Model Optimization & Conversion
+coremltools
+
+# Utilities
+python-dotenv
+pyyaml
+tqdm
