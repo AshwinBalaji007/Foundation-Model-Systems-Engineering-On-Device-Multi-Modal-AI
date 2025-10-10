@@ -21,3 +21,7 @@ venv/
 # Hugging Face cache
 .cache/
 **/__pycache__/
+
+# --- ADD THIS LINE ---
+# Project-specific: Ignore downloaded datasets
+ai-model-pipeline/data/
