@@ -1,6 +1,8 @@
 # ==============================================================================
-# AI Systems Engineering: Distributed Training Script (Final Version for BLIP)
+# AI Systems Engineering: Distributed Training Script (Definitive Final Version)
 # ==============================================================================
+# This version includes a robust, explicit type-casting to prevent configuration errors.
+
 import sys
 from pathlib import Path
 src_path = Path(__file__).resolve().parent.parent
@@ -13,16 +15,11 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
-
-# --- THE DEFINITIVE FIX IS HERE ---
-# We import the specific, correct model class for the BLIP architecture.
 from transformers import AutoProcessor, BlipForConditionalGeneration
-# --- END OF FIX ---
-
 from data.dataset import get_dataloader
 
 def setup():
-    """Initializes the distributed process group via environment variables."""
+    """Initializes the distributed process group."""
     dist.init_process_group("nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
@@ -42,17 +39,13 @@ def train(rank: int, world_size: int, config: dict):
     model_name = config['model']['base_model_name']
     if rank == 0: print(f"Loading base model '{model_name}'...")
     
-    # Processor loading remains the same
     processor = AutoProcessor.from_pretrained(model_name)
-    
-    # Use the specific, correct model class
     model = BlipForConditionalGeneration.from_pretrained(
         model_name,
         torch_dtype=torch.float16
     )
     
     model.to(device)
-    # For a model of this size, DDP is simpler and more efficient than FSDP.
     model = DDP(model, device_ids=[local_rank])
     
     if rank == 0: print("✅ Model successfully loaded and wrapped with DDP.")
@@ -66,9 +59,24 @@ def train(rank: int, world_size: int, config: dict):
         batch_size=config['training']['batch_size_per_device']
     )
 
-    # For image captioning, the loss is calculated internally by the model
-    # when 'labels' are provided, so we don't need a separate criterion.
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config['training']['learning_rate'])
+    # --- THE DEFINITIVE, BULLETPROOF FIX IS HERE ---
+    
+    # 1. Get the learning rate value from the config
+    lr_from_config = config['training']['learning_rate']
+    
+    # 2. (FOR DEBUGGING) Print the value and its type to see the ground truth
+    if rank == 0:
+        print("\n--- DEBUGGING LEARNING RATE ---")
+        print(f"Value from config: {lr_from_config}")
+        print(f"Type from config: {type(lr_from_config)}")
+        print("---------------------------------")
+    
+    # 3. (THE FIX) Explicitly cast the value to a float.
+    # This makes the code resilient to any string formatting issues.
+    learning_rate = float(lr_from_config)
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    # --- END OF FIX ---
     
     if rank == 0: print("\n--- Starting Training Loop ---")
     model.train()
@@ -77,17 +85,12 @@ def train(rank: int, world_size: int, config: dict):
         progress_bar = tqdm(dataloader, disable=(rank != 0), desc=f"Epoch {epoch+1}")
         
         for batch in progress_bar:
-            # The BLIP model expects 'labels' which are the same as 'input_ids' for captioning
             batch["labels"] = batch["input_ids"]
-            
-            # Move data to the correct GPU
             batch = {k: v.to(device) for k, v in batch.items()}
             
-            # Forward pass
             outputs = model(**batch)
             loss = outputs.loss
             
-            # Backward pass and optimization
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -99,13 +102,13 @@ def train(rank: int, world_size: int, config: dict):
         print("\n--- Training Complete ---")
         save_path = config['model']['fine_tuned_path']
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        # It's best practice to save the processor along with the model
         model.module.save_pretrained(save_path)
         processor.save_pretrained(save_path)
         print(f"✅ Model and processor saved to: {save_path}")
 
     cleanup()
 
+# --- (The __main__ block remains the same) ---
 if __name__ == '__main__':
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
