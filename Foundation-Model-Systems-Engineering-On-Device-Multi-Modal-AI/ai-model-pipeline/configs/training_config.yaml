@@ -14,4 +14,4 @@ data:
 training:
   num_epochs: 3
   learning_rate: 5e-5 # A common starting learning rate for fine-tuning
-  batch_size_per_device: 8 # We can use a larger batch size with a smaller model
+  batch_size_per_device: 1 # We can use a larger batch size with a smaller model
