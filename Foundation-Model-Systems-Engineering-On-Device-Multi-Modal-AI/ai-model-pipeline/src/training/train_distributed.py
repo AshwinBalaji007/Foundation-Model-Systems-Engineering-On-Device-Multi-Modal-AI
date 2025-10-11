@@ -1,8 +1,8 @@
 # ==============================================================================
-# AI Systems Engineering: Distributed Training Script (Final Bare Metal Version)
+# AI Systems Engineering: Distributed Training Script (Final Stable Version)
 # ==============================================================================
-# This version removes manual mixed-precision handling to work with models
-# that internally cast to float16.
+# This version implements the standard, industry-best-practice pattern for
+# stable mixed-precision training using a GradScaler and autocast.
 
 import sys
 from pathlib import Path
@@ -15,17 +15,21 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+# --- Import the necessary tools for stable mixed precision ---
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 from transformers import AutoProcessor, BlipForConditionalGeneration
 from data.dataset import get_dataloader
 
 def setup():
+    """Initializes the distributed process group."""
     dist.init_process_group("nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank
 
 def cleanup():
+    """Cleans up the distributed process group."""
     dist.destroy_process_group()
 
 def train(rank: int, world_size: int, config: dict):
@@ -36,25 +40,22 @@ def train(rank: int, world_size: int, config: dict):
     device = torch.device(f"cuda:{local_rank}")
 
     model_name = config['model']['base_model_name']
-    if rank == 0: print(f"Loading base model '{model_name}'...")
+    if rank == 0: print(f"Loading base model '{model_name}' in full FP32 precision...")
     
     processor = AutoProcessor.from_pretrained(model_name)
     
     # --- THE DEFINITIVE FIX IS HERE ---
-    # 1. Load the model WITH torch_dtype=torch.float16.
-    # We will now fully commit to the float16 workflow that the model prefers.
-    model = BlipForConditionalGeneration.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16
-    )
+    # 1. Load the model in standard float32 precision. Do NOT use torch_dtype.
+    # This keeps a stable "master copy" of the weights.
+    model = BlipForConditionalGeneration.from_pretrained(model_name)
     
-    # 2. Move the float16 model to the GPU.
+    # 2. Move the full-precision model to the GPU.
     model.to(device)
     
     # 3. Wrap the model with DDP.
     model = DDP(model, device_ids=[local_rank])
     
-    if rank == 0: print("✅ Model successfully loaded in FP16 and wrapped with DDP.")
+    if rank == 0: print("✅ Model successfully loaded and wrapped with DDP.")
 
     if rank == 0: print("Creating distributed dataloaders...")
     dataloader = get_dataloader(
@@ -64,12 +65,12 @@ def train(rank: int, world_size: int, config: dict):
         batch_size=config['training']['batch_size_per_device']
     )
 
-    # 4. Use a standard optimizer.
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config['training']['learning_rate']))
     
-    # 5. REMOVE the GradScaler and autocast. We are now operating fully in float16.
+    # 4. Initialize the GradScaler.
+    scaler = GradScaler()
     
-    if rank == 0: print("\n--- Starting Training Loop (Native FP16) ---")
+    if rank == 0: print("\n--- Starting Training Loop with Stable Mixed Precision ---")
     model.train()
     for epoch in range(config['training']['num_epochs']):
         dataloader.sampler.set_epoch(epoch)
@@ -79,14 +80,19 @@ def train(rank: int, world_size: int, config: dict):
             batch["labels"] = batch["input_ids"]
             batch = {k: v.to(device) for k, v in batch.items()}
             
-            # The forward pass now runs natively in float16.
-            outputs = model(**batch)
-            loss = outputs.loss
-            
-            # Standard backward pass and optimizer step.
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            
+            # 5. Use autocast ONLY for the forward pass and loss calculation.
+            # This performs these operations in float16 for speed/memory.
+            with autocast():
+                outputs = model(**batch)
+                loss = outputs.loss
+            
+            # 6. The scaler handles the rest: scaling the loss, backward pass,
+            #    unscaling gradients, and updating the optimizer.
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             if rank == 0: progress_bar.set_postfix(loss=loss.item())
         dist.barrier()
