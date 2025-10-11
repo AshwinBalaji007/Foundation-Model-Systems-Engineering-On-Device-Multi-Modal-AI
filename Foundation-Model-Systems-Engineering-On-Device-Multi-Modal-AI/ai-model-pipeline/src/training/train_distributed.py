@@ -1,7 +1,7 @@
 # ==============================================================================
-# AI Systems Engineering: Distributed Training Script (Definitive Final Version)
+# AI Systems Engineering: Distributed Training Script (Final, Stable Version)
 # ==============================================================================
-# This version includes a robust, explicit type-casting to prevent configuration errors.
+# This version includes a Gradient Scaler for stable mixed-precision (float16) training.
 
 import sys
 from pathlib import Path
@@ -14,19 +14,19 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+# --- NEW IMPORTS FOR STABLE TRAINING ---
+from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 from transformers import AutoProcessor, BlipForConditionalGeneration
 from data.dataset import get_dataloader
 
 def setup():
-    """Initializes the distributed process group."""
     dist.init_process_group("nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank
 
 def cleanup():
-    """Cleans up the distributed process group."""
     dist.destroy_process_group()
 
 def train(rank: int, world_size: int, config: dict):
@@ -40,10 +40,7 @@ def train(rank: int, world_size: int, config: dict):
     if rank == 0: print(f"Loading base model '{model_name}'...")
     
     processor = AutoProcessor.from_pretrained(model_name)
-    model = BlipForConditionalGeneration.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16
-    )
+    model = BlipForConditionalGeneration.from_pretrained(model_name, torch_dtype=torch.float16)
     
     model.to(device)
     model = DDP(model, device_ids=[local_rank])
@@ -52,33 +49,18 @@ def train(rank: int, world_size: int, config: dict):
 
     if rank == 0: print("Creating distributed dataloaders...")
     dataloader = get_dataloader(
-        rank=rank,
-        world_size=world_size,
-        dataset_name=config['data']['dataset_name'],
-        processor=processor,
+        rank=rank, world_size=world_size,
+        dataset_name=config['data']['dataset_name'], processor=processor,
         batch_size=config['training']['batch_size_per_device']
     )
 
-    # --- THE DEFINITIVE, BULLETPROOF FIX IS HERE ---
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(config['training']['learning_rate']))
     
-    # 1. Get the learning rate value from the config
-    lr_from_config = config['training']['learning_rate']
+    # --- THE GRADIENT SCALER FIX ---
+    # Initialize a gradient scaler for mixed-precision training
+    scaler = GradScaler()
     
-    # 2. (FOR DEBUGGING) Print the value and its type to see the ground truth
-    if rank == 0:
-        print("\n--- DEBUGGING LEARNING RATE ---")
-        print(f"Value from config: {lr_from_config}")
-        print(f"Type from config: {type(lr_from_config)}")
-        print("---------------------------------")
-    
-    # 3. (THE FIX) Explicitly cast the value to a float.
-    # This makes the code resilient to any string formatting issues.
-    learning_rate = float(lr_from_config)
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    # --- END OF FIX ---
-    
-    if rank == 0: print("\n--- Starting Training Loop ---")
+    if rank == 0: print("\n--- Starting Training Loop with Gradient Scaling ---")
     model.train()
     for epoch in range(config['training']['num_epochs']):
         dataloader.sampler.set_epoch(epoch)
@@ -88,12 +70,22 @@ def train(rank: int, world_size: int, config: dict):
             batch["labels"] = batch["input_ids"]
             batch = {k: v.to(device) for k, v in batch.items()}
             
-            outputs = model(**batch)
-            loss = outputs.loss
-            
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            
+            # --- Use autocast for the forward pass ---
+            # This automatically runs operations in float16 where possible
+            with autocast():
+                outputs = model(**batch)
+                loss = outputs.loss
+            
+            # --- Scale the loss and perform the backward pass ---
+            scaler.scale(loss).backward()
+            
+            # --- Unscale gradients and perform optimizer step ---
+            scaler.step(optimizer)
+            
+            # --- Update the scaler for the next iteration ---
+            scaler.update()
             
             if rank == 0: progress_bar.set_postfix(loss=loss.item())
         dist.barrier()
@@ -108,7 +100,7 @@ def train(rank: int, world_size: int, config: dict):
 
     cleanup()
 
-# --- (The __main__ block remains the same) ---
+# --- (The '__main__' block remains the same) ---
 if __name__ == '__main__':
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
