@@ -1,7 +1,7 @@
 # ==============================================================================
-# AI Systems Engineering: Distributed Training Script (Final, Stable Version)
+# AI Systems Engineering: Distributed Training Script (Definitive Final Version)
 # ==============================================================================
-# This version includes a Gradient Scaler for stable mixed-precision (float16) training.
+# This version implements the standard, stable pattern for mixed-precision DDP training.
 
 import sys
 from pathlib import Path
@@ -14,7 +14,6 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-# --- NEW IMPORTS FOR STABLE TRAINING ---
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
 from transformers import AutoProcessor, BlipForConditionalGeneration
@@ -37,12 +36,18 @@ def train(rank: int, world_size: int, config: dict):
     device = torch.device(f"cuda:{local_rank}")
 
     model_name = config['model']['base_model_name']
-    if rank == 0: print(f"Loading base model '{model_name}'...")
+    if rank == 0: print(f"Loading base model '{model_name}' in full FP32 precision...")
     
     processor = AutoProcessor.from_pretrained(model_name)
-    model = BlipForConditionalGeneration.from_pretrained(model_name, torch_dtype=torch.float16)
     
+    # --- THE DEFINITIVE FIX IS HERE ---
+    # 1. Load the model in standard float32 precision. Do NOT use torch_dtype here.
+    model = BlipForConditionalGeneration.from_pretrained(model_name)
+    
+    # 2. Move the full-precision model to the GPU.
     model.to(device)
+    
+    # 3. Wrap the model with DDP.
     model = DDP(model, device_ids=[local_rank])
     
     if rank == 0: print("✅ Model successfully loaded and wrapped with DDP.")
@@ -55,12 +60,9 @@ def train(rank: int, world_size: int, config: dict):
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config['training']['learning_rate']))
-    
-    # --- THE GRADIENT SCALER FIX ---
-    # Initialize a gradient scaler for mixed-precision training
     scaler = GradScaler()
     
-    if rank == 0: print("\n--- Starting Training Loop with Gradient Scaling ---")
+    if rank == 0: print("\n--- Starting Training Loop with Stable Mixed Precision ---")
     model.train()
     for epoch in range(config['training']['num_epochs']):
         dataloader.sampler.set_epoch(epoch)
@@ -72,19 +74,15 @@ def train(rank: int, world_size: int, config: dict):
             
             optimizer.zero_grad()
             
-            # --- Use autocast for the forward pass ---
-            # This automatically runs operations in float16 where possible
+            # 4. Use autocast ONLY for the forward pass.
+            # This performs the forward pass in float16 for speed/memory.
             with autocast():
                 outputs = model(**batch)
                 loss = outputs.loss
             
-            # --- Scale the loss and perform the backward pass ---
+            # 5. The scaler handles the rest: backward pass and optimizer step.
             scaler.scale(loss).backward()
-            
-            # --- Unscale gradients and perform optimizer step ---
             scaler.step(optimizer)
-            
-            # --- Update the scaler for the next iteration ---
             scaler.update()
             
             if rank == 0: progress_bar.set_postfix(loss=loss.item())
@@ -100,7 +98,7 @@ def train(rank: int, world_size: int, config: dict):
 
     cleanup()
 
-# --- (The '__main__' block remains the same) ---
+# --- (The __main__ block remains the same) ---
 if __name__ == '__main__':
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
@@ -108,7 +106,7 @@ if __name__ == '__main__':
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
     if not torch.cuda.is_available():
-        raise RuntimeError("This training script requires at least one CUDA-enabled GPU.")
+        raise RuntimeError("This script requires at least one CUDA-enabled GPU.")
     if world_size > torch.cuda.device_count():
          raise RuntimeError(f"Requested {world_size} GPUs, but only {torch.cuda.device_count()} are available.")
     train(rank, world_size, config)
