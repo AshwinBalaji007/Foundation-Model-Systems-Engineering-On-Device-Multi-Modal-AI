@@ -3,7 +3,7 @@
 model:
   # --- THE CHANGE ---
   base_model_name: "Salesforce/blip-image-captioning-large"
-  
+  fine_tuned_hf_repo_id: "Ashwin0070078/ashwin-blip-finetuned-oxford-pets"
   fine_tuned_path: "./artifacts/blip_finetuned.pth"
   quantized_path: "./artifacts/blip_quantized.pth"
   coreml_output_path: "./artifacts/AuraModel.mlmodel"

@@ -25,3 +25,6 @@ venv/
 # --- ADD THIS LINE ---
 # Project-specific: Ignore downloaded datasets
 ai-model-pipeline/data/
+
+# Ignore large built artifacts
+artifacts/
