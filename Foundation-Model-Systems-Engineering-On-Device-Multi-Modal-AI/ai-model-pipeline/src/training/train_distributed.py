@@ -55,7 +55,7 @@ def train(rank: int, world_size: int, config: dict):
     # 3. Wrap the model with DDP.
     model = DDP(model, device_ids=[local_rank])
     
-    if rank == 0: print("✅ Model successfully loaded and wrapped with DDP.")
+    if rank == 0: print(" Model successfully loaded and wrapped with DDP.")
 
     if rank == 0: print("Creating distributed dataloaders...")
     dataloader = get_dataloader(
@@ -103,7 +103,7 @@ def train(rank: int, world_size: int, config: dict):
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         model.module.save_pretrained(save_path)
         processor.save_pretrained(save_path)
-        print(f"✅ Model and processor saved to: {save_path}")
+        print(f" Model and processor saved to: {save_path}")
 
     cleanup()
 
