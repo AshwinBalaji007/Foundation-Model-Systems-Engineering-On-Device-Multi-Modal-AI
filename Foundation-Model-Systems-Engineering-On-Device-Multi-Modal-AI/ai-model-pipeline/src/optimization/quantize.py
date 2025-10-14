@@ -1,71 +1,89 @@
-# ai-model-pipeline/src/optimization/quantize.py
+# ==============================================================================
+# AI Systems Engineering: Model Quantization Script
+# ==============================================================================
+#
+# This script is responsible for the first stage of model optimization. It loads a
+# fine-tuned model from a central repository (the Hugging Face Hub), applies
+# post-training dynamic quantization to reduce its size and prepare it for
+# efficient inference, and saves the resulting quantized model locally.
 
 import torch
-import torch.nn as nn
-from transformers import BlipForConditionalGeneration, AutoProcessor
 import yaml
 from pathlib import Path
 import os
+import sys
 
-def quantize_model(config: dict):
+# --- Add the 'src' directory to the Python path ---
+# This allows us to import our custom modules like 'architecture.py'
+src_path = Path(__file__).resolve().parent.parent
+sys.path.append(str(src_path))
+
+# Import our custom model loader from the 'model' module
+from model.architecture import load_model_and_processor
+
+def quantize_model(model: torch.nn.Module, output_path: str):
     """
-    Loads a fine-tuned PyTorch model, applies dynamic quantization,
-    and saves the quantized model.
+    Applies post-training dynamic quantization to a PyTorch model.
+    This is a highly effective technique for reducing model size (by ~4x)
+    and accelerating CPU/on-device inference with minimal accuracy loss.
+
+    Args:
+        model (torch.nn.Module): The PyTorch model to be quantized.
+        output_path (str): The local path where the quantized model's
+                           state dictionary will be saved.
     """
-    if not torch.cuda.is_available():
-        print("CUDA not available. Quantization will run on CPU.")
+    print("\n--- Starting Model Quantization ---")
     
-    # 1. Define Paths
-    # We load the fine-tuned model you uploaded to Hugging Face
-    fine_tuned_model_name = config['model']['fine_tuned_hf_repo_id']
-    quantized_model_path = Path(config['model']['quantized_path'])
+    # Set the model to evaluation mode. This is crucial as it disables
+    # layers like dropout that behave differently during training.
+    model.eval()
     
-    # Ensure the output directory exists
-    quantized_model_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    print(f"Loading fine-tuned model from: {fine_tuned_model_name}")
-
-    # 2. Load the Fine-Tuned Model (on CPU for quantization)
-    model = BlipForConditionalGeneration.from_pretrained(fine_tuned_model_name)
-    model.to("cpu")
-    model.eval() # Set the model to evaluation mode
-
-    # 3. Apply Post-Training Dynamic Quantization
-    # This converts the weights of linear layers from float32 to int8.
-    print("Applying dynamic quantization...")
+    # Apply dynamic quantization. This function iterates through the model
+    # and replaces the weights of specified layer types (here, torch.nn.Linear)
+    # with their 8-bit integer equivalents.
     quantized_model = torch.quantization.quantize_dynamic(
-        model,
-        {nn.Linear}, # Specify the layer types to quantize
-        dtype=torch.qint8
+        model, 
+        {torch.nn.Linear},  # Specify the layer types to target for quantization
+        dtype=torch.qint8   # The target data type for the quantized weights
     )
+    
     print(" Model successfully quantized.")
+    
+    # Ensure the output directory exists before saving.
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # Save the state dictionary of the quantized model. This file contains
+    # all the learned weights in their new, compressed format.
+    torch.save(quantized_model.state_dict(), output_path)
+    print(f" Quantized model state_dict saved to: {output_path}")
 
-    # 4. Save the Quantized Model's State Dictionary
-    torch.save(quantized_model.state_dict(), quantized_model_path)
-    print(f" Quantized model saved to: {quantized_model_path}")
-
-    # 5. Compare File Sizes to Show Impact
-    original_size = os.path.getsize(config['model']['fine_tuned_path']) / (1024*1024) # Placeholder path
-    quantized_size = quantized_model_path.stat().st_size / (1024*1024)
-    print("\n--- Optimization Impact ---")
-    print(f"Original model size (approx): {original_size:.2f} MB") # This will be inaccurate until we download
-    print(f"Quantized model size: {quantized_size:.2f} MB")
-    print(f"Size reduction: {(1 - quantized_size / original_size) * 100:.2f}%")
-    print("-------------------------")
-
-
+# This block is executed when the script is run directly from the command line.
 if __name__ == '__main__':
-    # Load configuration
+    # --- 1. Load Project Configuration ---
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
     with open(config_path, 'r') as file:
         config = yaml.safe_load(file)
 
-    # Add your Hugging Face repo ID to the config before running
-    # For example:
-    # config['model']['fine_tuned_hf_repo_id'] = "AshwinBalaji007/ashwin-blip-finetuned-oxford-pets"
+    # --- 2. Get Model and Output Paths from Config ---
+    # This is the professional, cloud-native workflow. We are loading our
+    # fine-tuned model directly from its permanent home on the Hugging Face Hub.
+    fine_tuned_model_id = config['model']['fine_tuned_hub_id']
+    quantized_output_path = config['model']['quantized_path']
     
-    if 'fine_tuned_hf_repo_id' not in config['model']:
-        raise ValueError("Please add 'fine_tuned_hf_repo_id' to your config.yaml")
+    # Validate that the Hub ID is present in the config
+    if not fine_tuned_model_id:
+        print("Error: 'fine_tuned_hub_id' not found in config.yaml.")
+        print("Please specify the Hugging Face Hub repository ID for the fine-tuned model.")
+        sys.exit(1)
 
-    quantize_model(config)
+    print(f"--- Loading Fine-Tuned Model from Hugging Face Hub ---")
+    print(f"Model ID: {fine_tuned_model_id}")
+        
+    # --- 3. Load the Fine-Tuned Model ---
+    # We load the model in full float32 precision (`dtype=None`) because the
+    # quantization process requires the original, high-precision weights.
+    model, _ = load_model_and_processor(fine_tuned_model_id, dtype=None)
+    
+    # --- 4. Run the Quantization Process ---
+    quantize_model(model, quantized_output_path)

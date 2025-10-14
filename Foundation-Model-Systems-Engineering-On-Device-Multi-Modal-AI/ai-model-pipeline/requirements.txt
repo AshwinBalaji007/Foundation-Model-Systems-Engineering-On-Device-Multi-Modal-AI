@@ -6,6 +6,7 @@ datasets
 
 # Model Optimization & Conversion
 coremltools
+numpy==1.26.4
 
 # Utilities
 python-dotenv

@@ -3,7 +3,7 @@
 model:
   # --- THE CHANGE ---
   base_model_name: "Salesforce/blip-image-captioning-large"
-  fine_tuned_hf_repo_id: "Ashwin0070078/ashwin-blip-finetuned-oxford-pets"
+  fine_tuned_hub_id: "Ashwin0070078/ashwin-blip-finetuned-oxford-pets"
   fine_tuned_path: "./artifacts/blip_finetuned.pth"
   quantized_path: "./artifacts/blip_quantized.pth"
   coreml_output_path: "./artifacts/AuraModel.mlmodel"
@@ -14,4 +14,4 @@ data:
 training:
   num_epochs: 1
   learning_rate: 5e-5 # A common starting learning rate for fine-tuning
-  batch_size_per_device: 1 # We can use a larger batch size with a smaller model
+  batch_size_per_device: 1 # We can use a larger batch size with a smaller models
