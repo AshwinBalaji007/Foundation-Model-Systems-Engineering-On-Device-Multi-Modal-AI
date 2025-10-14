@@ -3,6 +3,7 @@ torch
 transformers
 accelerate
 datasets
+Pillow
 
 # Model Optimization & Conversion
 coremltools
