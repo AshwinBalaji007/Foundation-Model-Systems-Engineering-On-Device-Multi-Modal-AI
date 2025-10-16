@@ -1,17 +1,30 @@
-# Configuration for the AI Model Pipeline (BLIP Model)
+  # ==============================================================================
+# Configuration for the AI Model Pipeline (Definitive ViT-GPT2 Version)
+# ==============================================================================
 
 model:
-  # --- THE CHANGE ---
-  base_model_name: "Salesforce/blip-image-captioning-large"
+  # The new, fully supported Vision Encoder-Decoder Model
+  base_model_name: "nlpconnect/vit-gpt2-image-captioning"
+  
+  # The Hugging Face Hub ID for your fine-tuned model. Create a new repo for this.
   fine_tuned_hub_id: "Ashwin0070078/ashwin-blip-finetuned-oxford-pets"
-  fine_tuned_path: "./artifacts/blip_finetuned.pth"
-  quantized_path: "./artifacts/blip_quantized.pth"
+  
+  # The local path where the trained model will be saved temporarily.
+  fine_tuned_path: "./artifacts/vit_gpt2_finetuned"
+  
+  # The final output of the conversion script. It will be an .mlpackage directory.
   coreml_output_path: "./artifacts/AuraModel.mlmodel"
 
 data:
+  # The dataset remains the same.
   dataset_name: "pcuenq/oxford-pets"
 
 training:
+  # The number of times to loop over the entire dataset.
   num_epochs: 1
-  learning_rate: 5e-5 # A common starting learning rate for fine-tuning
-  batch_size_per_device: 1 # We can use a larger batch size with a smaller models
+  
+  # A good starting learning rate for fine-tuning vision-language models.
+  learning_rate: 5e-5
+  
+  # This model is smaller than BLIP, so we can use a larger batch size for faster training.
+  batch_size_per_device: 1
