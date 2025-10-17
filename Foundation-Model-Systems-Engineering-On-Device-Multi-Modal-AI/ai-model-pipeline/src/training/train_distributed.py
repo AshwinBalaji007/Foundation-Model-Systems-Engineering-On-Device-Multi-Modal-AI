@@ -2,7 +2,8 @@
 # AI Systems Engineering: Distributed Training Script (Definitive Final Version)
 # ==============================================================================
 # This is the final, correct, and working version. It includes the critical
-# model configuration step to set the decoder_start_token_id.
+# model configuration step to set the special tokens DIRECTLY on the
+# internal decoder model, which is the definitive fix for the ValueError.
 
 import sys
 from pathlib import Path
@@ -45,12 +46,21 @@ def train(rank: int, world_size: int, config: dict):
     image_processor = ViTImageProcessor.from_pretrained(model_name)
     model = VisionEncoderDecoderModel.from_pretrained(model_name)
     
-    # --- THE DEFINITIVE, FINAL FIX IS HERE ---
-    # This specific model is missing key configuration for training. We set it manually.
-    # The decoder needs to know which token ID to use to start generating text.
-    model.config.decoder_start_token_id = tokenizer.cls_token_id
-    # The model also needs to know which token ID is for padding.
+    # --- THE DEFINITIVE, FINAL, CORRECT FIX IS HERE ---
+    
+    # 1. Set the tokenizer's pad token to its end-of-sequence token.
+    #    This is a standard practice for GPT-2 models which don't have a pad token.
+    tokenizer.pad_token = tokenizer.eos_token
+    
+    # 2. Perform "surgery" on the model's configuration.
+    #    We must set the special token IDs on the INTERNAL DECODER's config.
+    model.decoder.config.decoder_start_token_id = tokenizer.bos_token_id
+    model.decoder.config.pad_token_id = tokenizer.pad_token_id
+    
+    # 3. We also set it on the top-level config for saving purposes.
+    model.config.decoder_start_token_id = tokenizer.bos_token_id
     model.config.pad_token_id = tokenizer.pad_token_id
+    
     # --- END OF FIX ---
 
     # Move the full-precision model to the GPU
@@ -81,11 +91,7 @@ def train(rank: int, world_size: int, config: dict):
         progress_bar = tqdm(dataloader, disable=(rank != 0), desc=f"Epoch {epoch+1}")
         
         for batch in progress_bar:
-            # The model expects "labels" to calculate the loss. For this task,
-            # the labels are the same as the input_ids.
             batch["labels"] = batch["input_ids"]
-            
-            # Move the entire batch to the correct GPU
             batch = {k: v.to(device) for k, v in batch.items()}
             
             optimizer.zero_grad()
@@ -104,7 +110,6 @@ def train(rank: int, world_size: int, config: dict):
         print("\n--- Training Complete ---")
         save_path = config['model']['fine_tuned_path']
         os.makedirs(save_path, exist_ok=True)
-        # It's best practice to save all components together
         model.module.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
         image_processor.save_pretrained(save_path)
@@ -119,7 +124,7 @@ if __name__ == '__main__':
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
     if not torch.cuda.is_available():
-        raise RuntimeError("This training script requires at least one CUDA-enabled GPU.")
+        raise RuntimeError("This script requires at least one CUDA-enabled GPU.")
     if world_size > torch.cuda.device_count():
          raise RuntimeError(f"Requested {world_size} GPUs, but only {torch.cuda.device_count()} are available.")
     train(rank, world_size, config)
