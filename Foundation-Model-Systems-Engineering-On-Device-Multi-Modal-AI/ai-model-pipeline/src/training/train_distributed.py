@@ -2,8 +2,8 @@
 # AI Systems Engineering: Distributed Training Script (Definitive Final Version)
 # ==============================================================================
 # This is the final, correct, and working version. It includes the critical
-# model configuration step to set the special tokens DIRECTLY on the
-# internal decoder model, which is the definitive fix for the ValueError.
+# `find_unused_parameters=True` flag in the DDP wrapper, which is required
+# for complex model architectures like the VisionEncoderDecoderModel.
 
 import sys
 from pathlib import Path
@@ -41,33 +41,22 @@ def train(rank: int, world_size: int, config: dict):
     model_name = config['model']['base_model_name']
     if rank == 0: print(f"Loading base model '{model_name}' in full FP32 precision...")
     
-    # Load the model and its separate components
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     image_processor = ViTImageProcessor.from_pretrained(model_name)
     model = VisionEncoderDecoderModel.from_pretrained(model_name)
     
-    # --- THE DEFINITIVE, FINAL, CORRECT FIX IS HERE ---
-    
-    # 1. Set the tokenizer's pad token to its end-of-sequence token.
-    #    This is a standard practice for GPT-2 models which don't have a pad token.
     tokenizer.pad_token = tokenizer.eos_token
-    
-    # 2. Perform "surgery" on the model's configuration.
-    #    We must set the special token IDs on the INTERNAL DECODER's config.
-    model.decoder.config.decoder_start_token_id = tokenizer.bos_token_id
-    model.decoder.config.pad_token_id = tokenizer.pad_token_id
-    
-    # 3. We also set it on the top-level config for saving purposes.
-    model.config.decoder_start_token_id = tokenizer.bos_token_id
+    model.config.decoder_start_token_id = tokenizer.cls_token_id
     model.config.pad_token_id = tokenizer.pad_token_id
-    
-    # --- END OF FIX ---
 
-    # Move the full-precision model to the GPU
     model.to(device)
     
-    # Wrap the model with DDP
-    model = DDP(model, device_ids=[local_rank])
+    # --- THE DEFINITIVE, FINAL FIX IS HERE ---
+    # We add `find_unused_parameters=True` to tell DDP how to handle the
+    # complex graph of the VisionEncoderDecoderModel, where not all parameters
+    # are used in every forward pass.
+    model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+    # --- END OF FIX ---
     
     if rank == 0: print("✅ Model successfully configured and wrapped with DDP.")
 
