@@ -1,6 +1,7 @@
 # ======================================================================
-# AI Systems Engineering: Distributed Training Script (Fixed Version)
+# AI Systems Engineering: Distributed Training Script (Fixed + tqdm Single Line)
 # ======================================================================
+
 import sys
 from pathlib import Path
 src_path = Path(__file__).resolve().parent.parent
@@ -13,7 +14,7 @@ import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
-from torch.cuda.amp import GradScaler  # use recommended GradScaler init below
+from torch.cuda.amp import GradScaler
 from tqdm import tqdm
 from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoTokenizer
 from data.dataset import get_dataloader
@@ -21,6 +22,10 @@ from data.dataset import get_dataloader
 import functools
 import warnings
 
+
+# -----------------------------
+# Utility Functions
+# -----------------------------
 def choose_decoder_start_token_id(tokenizer):
     """Pick a sensible decoder_start_token_id with fallbacks."""
     candidates = [
@@ -33,9 +38,23 @@ def choose_decoder_start_token_id(tokenizer):
     for c in candidates:
         if c is not None:
             return c
-    # last resort: pick token id 0 (rare but deterministic)
     warnings.warn("No usual special token ids found — falling back to token id 0 for decoder_start_token_id.")
     return 0
+
+
+def _map_dtype_string_to_torch(dtype_str):
+    if not dtype_str:
+        return None
+    mapping = {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    return mapping.get(dtype_str, None)
+
 
 def setup():
     """Initializes the distributed process group and sets CUDA device."""
@@ -44,10 +63,18 @@ def setup():
     torch.cuda.set_device(local_rank)
     return local_rank
 
+
 def cleanup():
     """Cleans up the distributed process group."""
-    dist.destroy_process_group()
+    try:
+        dist.destroy_process_group()
+    except Exception:
+        pass
 
+
+# -----------------------------
+# Main Training Loop
+# -----------------------------
 def train(rank: int, world_size: int, config: dict):
     if rank == 0:
         print("--- Initializing Training on All Ranks using FSDP ---")
@@ -62,35 +89,28 @@ def train(rank: int, world_size: int, config: dict):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     image_processor = ViTImageProcessor.from_pretrained(model_name)
 
-    # Ensure pad token exists (many tokenizers for GPT2 don't have pad_token)
+    # Ensure pad token exists
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Load model onto CPU, request dtype if provided
-    load_dtype = getattr(torch, config['model'].get('dtype', 'bfloat16')) if 'dtype' in config['model'] else None
-    model_kwargs = {}
-    if load_dtype is not None:
-        model_kwargs["torch_dtype"] = load_dtype  # transformers still accepts torch_dtype in many versions
-    model = VisionEncoderDecoderModel.from_pretrained(model_name, **model_kwargs)
+    # Map dtype
+    dtype_str = config.get('model', {}).get('dtype', None)
+    torch_dtype_obj = _map_dtype_string_to_torch(dtype_str)
+    model_load_kwargs = {}
+    if torch_dtype_obj is not None:
+        model_load_kwargs["torch_dtype"] = torch_dtype_obj
 
-    # Ensure pad token id is set in both tokenizer and model config
+    model = VisionEncoderDecoderModel.from_pretrained(model_name, **model_load_kwargs)
+
+    # Fix pad and decoder tokens
     if tokenizer.pad_token_id is None and tokenizer.pad_token is not None:
         tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
     if tokenizer.pad_token_id is None:
-        # As a final fallback, set pad token to eos or 0
-        if tokenizer.eos_token_id is not None:
-            tokenizer.pad_token_id = tokenizer.eos_token_id
-        else:
-            tokenizer.pad_token_id = 0
+        tokenizer.pad_token_id = tokenizer.eos_token_id if tokenizer.eos_token_id is not None else 0
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    # Robustly set decoder_start_token_id (was causing the crash)
     chosen_decoder_start = choose_decoder_start_token_id(tokenizer)
     model.config.decoder_start_token_id = chosen_decoder_start
-
-    # If model config requires vocab size match, ensure it's correct (optional)
-    if hasattr(tokenizer, "vocab_size"):
-        model.config.vocab_size = getattr(tokenizer, "vocab_size", model.config.vocab_size)
 
     if rank == 0:
         print(f"Using decoder_start_token_id = {model.config.decoder_start_token_id}")
@@ -108,9 +128,8 @@ def train(rank: int, world_size: int, config: dict):
 
     if rank == 0:
         print("✅ Model successfully configured and wrapped with FSDP.")
-
-    if rank == 0:
         print("Creating distributed dataloaders...")
+
     dataloader = get_dataloader(
         rank=rank,
         world_size=world_size,
@@ -121,53 +140,63 @@ def train(rank: int, world_size: int, config: dict):
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(config['training']['learning_rate']))
-
-    # Use recommended GradScaler init (device='cuda' is recommended in the FutureWarning)
     scaler = GradScaler()
 
     if rank == 0:
         print("\n--- Starting Training Loop with Stable Mixed Precision ---")
+
     model.train()
+    autocast_ctx = torch.amp.autocast
 
-    # Prefer explicit device in autocast per newer API:
-    autocast_ctx = torch.amp.autocast  # use in with-autocast(device_type='cuda')
-    for epoch in range(config['training']['num_epochs']):
-        # If your sampler supports set_epoch (DistributedSampler), set it
-        if hasattr(dataloader, "sampler") and hasattr(dataloader.sampler, "set_epoch"):
-            dataloader.sampler.set_epoch(epoch)
+    try:
+        for epoch in range(config['training']['num_epochs']):
+            if hasattr(dataloader, "sampler") and hasattr(dataloader.sampler, "set_epoch"):
+                dataloader.sampler.set_epoch(epoch)
 
-        progress_bar = tqdm(dataloader, disable=(rank != 0), desc=f"Epoch {epoch+1}")
-        for batch in progress_bar:
-            # many vision-encoder-decoder examples expect labels = input_ids for teacher forcing
-            if "input_ids" in batch:
-                batch["labels"] = batch["input_ids"]
+            # ✅ tqdm single-line setup
+            progress_bar = tqdm(
+                dataloader,
+                disable=(rank != 0),
+                desc=f"Epoch {epoch+1}",
+                dynamic_ncols=True,
+                leave=False,
+                position=0,
+                file=sys.stdout
+            )
 
-            # move tensors to device
-            batch = {k: v.to(device) for k, v in batch.items()}
+            for batch in progress_bar:
+                if "input_ids" in batch:
+                    batch["labels"] = batch["input_ids"]
 
-            optimizer.zero_grad()
-            with autocast_ctx(device_type='cuda'):
-                outputs = model(**batch)
-                loss = outputs.loss
+                batch = {k: v.to(device) for k, v in batch.items()}
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+                optimizer.zero_grad()
+                with autocast_ctx(device_type='cuda'):
+                    outputs = model(**batch)
+                    loss = outputs.loss
 
-            if rank == 0:
-                progress_bar.set_postfix(loss=float(loss.detach().cpu().item()))
-        # sync between ranks at epoch end
-        dist.barrier()
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
-    if rank == 0:
-        print("\n--- Training Complete ---")
-        save_path = config['model']['fine_tuned_path']
-        os.makedirs(save_path, exist_ok=True)
-        # Proper FSDP saving is more involved; we print path as placeholder.
-        print(f"✅ Model checkpoint would be saved to: {save_path}")
+                if rank == 0:
+                    progress_bar.set_postfix(loss=float(loss.detach().cpu().item()))
 
-    cleanup()
+            dist.barrier()  # sync between ranks at epoch end
 
+        if rank == 0:
+            print("\n--- Training Complete ---")
+            save_path = config['model']['fine_tuned_path']
+            os.makedirs(save_path, exist_ok=True)
+            print(f"✅ Model checkpoint would be saved to: {save_path}")
+
+    finally:
+        cleanup()
+
+
+# -----------------------------
+# Entry Point
+# -----------------------------
 if __name__ == '__main__':
     project_root = Path(__file__).resolve().parent.parent.parent
     config_path = project_root / "configs" / "training_config.yaml"
@@ -180,5 +209,6 @@ if __name__ == '__main__':
     if not torch.cuda.is_available():
         raise RuntimeError("This training script requires at least one CUDA-enabled GPU.")
     if world_size > torch.cuda.device_count():
-         raise RuntimeError(f"Requested {world_size} GPUs, but only {torch.cuda.device_count()} are available.")
+        raise RuntimeError(f"Requested {world_size} GPUs, but only {torch.cuda.device_count()} are available.")
+
     train(rank, world_size, config)
