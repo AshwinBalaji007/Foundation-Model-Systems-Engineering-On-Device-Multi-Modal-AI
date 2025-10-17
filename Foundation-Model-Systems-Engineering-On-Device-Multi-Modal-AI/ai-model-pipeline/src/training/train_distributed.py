@@ -20,12 +20,14 @@ from transformers import VisionEncoderDecoderModel, ViTImageProcessor, AutoToken
 from data.dataset import get_dataloader
 
 def setup():
+    """Initializes the distributed process group."""
     dist.init_process_group("nccl")
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     return local_rank
 
 def cleanup():
+    """Cleans up the distributed process group."""
     dist.destroy_process_group()
 
 def train(rank: int, world_size: int, config: dict):
@@ -79,7 +81,11 @@ def train(rank: int, world_size: int, config: dict):
         progress_bar = tqdm(dataloader, disable=(rank != 0), desc=f"Epoch {epoch+1}")
         
         for batch in progress_bar:
+            # The model expects "labels" to calculate the loss. For this task,
+            # the labels are the same as the input_ids.
             batch["labels"] = batch["input_ids"]
+            
+            # Move the entire batch to the correct GPU
             batch = {k: v.to(device) for k, v in batch.items()}
             
             optimizer.zero_grad()
@@ -98,6 +104,7 @@ def train(rank: int, world_size: int, config: dict):
         print("\n--- Training Complete ---")
         save_path = config['model']['fine_tuned_path']
         os.makedirs(save_path, exist_ok=True)
+        # It's best practice to save all components together
         model.module.save_pretrained(save_path)
         tokenizer.save_pretrained(save_path)
         image_processor.save_pretrained(save_path)
@@ -112,7 +119,7 @@ if __name__ == '__main__':
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     rank = int(os.environ.get("RANK", 0))
     if not torch.cuda.is_available():
-        raise RuntimeError("This script requires at least one CUDA-enabled GPU.")
+        raise RuntimeError("This training script requires at least one CUDA-enabled GPU.")
     if world_size > torch.cuda.device_count():
          raise RuntimeError(f"Requested {world_size} GPUs, but only {torch.cuda.device_count()} are available.")
     train(rank, world_size, config)
